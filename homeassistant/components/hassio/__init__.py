@@ -185,6 +185,18 @@ async def async_uninstall_addon(hass: HomeAssistantType, slug: str) -> dict:
 
 @bind_hass
 @api_data
+async def async_update_addon(hass: HomeAssistantType, slug: str) -> dict:
+    """Update add-on.
+
+    The caller of the function should handle HassioAPIError.
+    """
+    hassio = hass.data[DOMAIN]
+    command = f"/addons/{slug}/update"
+    return await hassio.send_command(command, timeout=None)
+
+
+@bind_hass
+@api_data
 async def async_start_addon(hass: HomeAssistantType, slug: str) -> dict:
     """Start add-on.
 
@@ -230,6 +242,21 @@ async def async_get_addon_discovery_info(
     data = await hassio.retrieve_discovery_messages()
     discovered_addons = data[ATTR_DISCOVERY]
     return next((addon for addon in discovered_addons if addon["addon"] == slug), None)
+
+
+@bind_hass
+@api_data
+async def async_create_snapshot(
+    hass: HomeAssistantType, payload: dict, partial: bool = False
+) -> dict:
+    """Create a full or partial snapshot.
+
+    The caller of the function should handle HassioAPIError.
+    """
+    hassio = hass.data[DOMAIN]
+    snapshot_type = "partial" if partial else "full"
+    command = f"/snapshots/new/{snapshot_type}"
+    return await hassio.send_command(command, payload=payload, timeout=None)
 
 
 @callback
@@ -522,15 +549,17 @@ def async_register_addons_in_dev_reg(
 ) -> None:
     """Register addons in the device registry."""
     for addon in addons:
-        dev_reg.async_get_or_create(
-            config_entry_id=entry_id,
-            identifiers={(DOMAIN, addon[ATTR_SLUG])},
-            manufacturer=addon.get(ATTR_REPOSITORY) or addon.get(ATTR_URL) or "unknown",
-            model="Home Assistant Add-on",
-            sw_version=addon[ATTR_VERSION],
-            name=addon[ATTR_NAME],
-            entry_type=ATTR_SERVICE,
-        )
+        params = {
+            "config_entry_id": entry_id,
+            "identifiers": {(DOMAIN, addon[ATTR_SLUG])},
+            "model": "Home Assistant Add-on",
+            "sw_version": addon[ATTR_VERSION],
+            "name": addon[ATTR_NAME],
+            "entry_type": ATTR_SERVICE,
+        }
+        if manufacturer := addon.get(ATTR_REPOSITORY) or addon.get(ATTR_URL):
+            params["manufacturer"] = manufacturer
+        dev_reg.async_get_or_create(**params)
 
 
 @callback
@@ -538,15 +567,16 @@ def async_register_os_in_dev_reg(
     entry_id: str, dev_reg: DeviceRegistry, os_dict: Dict[str, Any]
 ) -> None:
     """Register OS in the device registry."""
-    dev_reg.async_get_or_create(
-        config_entry_id=entry_id,
-        identifiers={(DOMAIN, "OS")},
-        manufacturer="Home Assistant",
-        model="Home Assistant Operating System",
-        sw_version=os_dict[ATTR_VERSION],
-        name="Home Assistant Operating System",
-        entry_type=ATTR_SERVICE,
-    )
+    params = {
+        "config_entry_id": entry_id,
+        "identifiers": {(DOMAIN, "OS")},
+        "manufacturer": "Home Assistant",
+        "model": "Home Assistant Operating System",
+        "sw_version": os_dict[ATTR_VERSION],
+        "name": "Home Assistant Operating System",
+        "entry_type": ATTR_SERVICE,
+    }
+    dev_reg.async_get_or_create(**params)
 
 
 @callback
@@ -600,15 +630,13 @@ class HassioDataUpdateCoordinator(DataUpdateCoordinator):
             return new_data
 
         # Remove add-ons that are no longer installed from device registry
-        if removed_addons := list(
-            set(self.data["addons"].keys()) - set(new_data["addons"].keys())
-        ):
+        if removed_addons := list(set(self.data["addons"]) - set(new_data["addons"])):
             async_remove_addons_from_dev_reg(self.dev_reg, removed_addons)
 
         # If there are new add-ons, we should reload the config entry so we can
         # create new devices and entities. We can return an empty dict because
         # coordinator will be recreated.
-        if list(set(new_data["addons"].keys()) - set(self.data["addons"].keys())):
+        if list(set(new_data["addons"]) - set(self.data["addons"])):
             self.hass.async_create_task(
                 self.hass.config_entries.async_reload(self.entry_id)
             )
